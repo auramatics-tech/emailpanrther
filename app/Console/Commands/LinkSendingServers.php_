@@ -1,0 +1,512 @@
+<?php
+
+namespace Acelle\Console\Commands;
+
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Http;
+use Acelle\Model\SendingServer;
+use Acelle\Model\TrackingDomain;
+use Log;
+
+class LinkSendingServers extends Command
+{
+
+
+    /**
+     * The name and signature of the console command.
+     *
+     * @var string
+     */
+    protected $signature = 'link:server';
+
+    /**
+     * The console command description.
+     *
+     * @var string
+     */
+    protected $description = 'Link sending servers';
+
+    /**
+     * Create a new command instance.
+     *
+     * @return void
+     */
+    public function __construct()
+    {
+        parent::__construct();
+    }
+
+    /**
+     * Execute the console command.
+     *
+     */
+    public function handle()
+    {
+
+        $sending_servers = SendingServer::where(['domain_created_attached' => 0])->get();
+        $tracking_ready = [];
+        if (count($sending_servers)) {
+            foreach ($sending_servers as $key => $servers) {
+                $sending_identities = json_decode($servers->options);
+
+                if (isset($sending_identities->identities)) {
+                    foreach ($sending_identities->identities as $domain_email => $data) {
+                        $domain = $domain_email;
+                        $this->info($domain_email);
+                        $domain = substr(strrchr($domain, "@"), 1);
+                        $identities[] = 1;
+                        if (!isset($data->droplet_id) || $data->droplet_id == 0) {
+                            $this->info('Creating Server');
+                            // Creates server on digital ocean
+                            $server = $this->create_server($domain);
+                            if (isset($server['droplet_id']) && $server['droplet_id']) {
+                                $data->droplet_id = $server['droplet_id'];
+                                $data->server_ip = $server['server_ip'];
+                            }
+                        }
+
+                        if (isset($data->server_ip) && $data->server_ip) {
+                            $this->info('Started');
+                            if ((!isset($data->domain_created) || $data->domain_created == 0) && (isset($data->droplet_id) && $data->droplet_id)) {
+
+                                $this->info('Creating Domain ' . $domain);
+                                $data->domain_created = 1;
+                                // Check and create domain on gandi
+                                // if ($this->create_domain($domain)) {
+                                // $data->domain_created = 1;
+                                // }
+                            }
+
+                            if (!isset($data->dns_attached) || $data->dns_attached == 0) {
+                                if (isset($data->domain_created) && $data->domain_created == 1) {
+                                    // Attach server A record with domain
+                                    $this->info('Updating DNS');
+                                    if ($servers->domain_type == 'gandi') {
+                                        if ($this->update_dns($domain, $data->server_ip)) {
+                                            $data->dns_attached = 1;
+                                        }
+                                    } else {
+                                        if ($this->update_dns_namecheap($domain, $data->server_ip)) {
+                                            $data->dns_attached = 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!isset($data->proxy_created) || $data->proxy_created == 0) {
+                                if (isset($data->domain_created) && $data->domain_created == 1) {
+                                    // Create EE Proxy
+                                    $this->info('Creating EE Proxy');
+                                    $ee_account = $this->create_ee_proxy($domain, $servers, $data->server_ip, $domain_email);
+                                    if ($ee_account) {
+                                        $data->proxy_created = 1;
+                                        $data->proxy_account = $ee_account;
+                                    }
+                                }
+                            }
+
+
+                            if (isset($data->dns_attached) && $data->dns_attached == 1) {
+                                if (!isset($data->install_ssl) || $data->install_ssl == 0) {
+                                    // SSL INSTALLED
+                                    $this->info('Installing SSL');
+                                    if ($this->install_ssl($domain, $data->server_ip)) {
+                                        $data->install_ssl = 1;
+                                    }
+                                }
+                            }
+
+                            if (!isset($data->tracking_ready) || $data->tracking_ready == 0) {
+                                if (isset($data->install_ssl) && $data->install_ssl == 1) {
+                                    // Create Tracking Domain
+                                    $this->info('Creating Tracking Domain');
+                                    if ($this->create_tracking_domains($domain, $servers->customer_id)) {
+                                        $this->info('Tracking Domain Ready');
+                                        $data->tracking_ready = 1;
+                                        $tracking_ready[] = 1;
+                                        $servers->domain_created_attached = 1;
+                                    } else {
+                                        $this->install_ssl($domain, $data->server_ip);
+                                        $this->info('Tracking Domain not Ready');
+                                    }
+                                }
+                            }else{
+                                $this->info('ready');
+                                $servers->domain_created_attached = 1;
+                            }
+                        } else {
+                            $data->server_ip = $this->check_server_ip($data->droplet_id);
+                        }
+
+                        $sending_identities->identities->{$domain_email} = $data;
+                    }
+                    $servers->options = json_encode($sending_identities);
+                    $servers->save();
+                }
+            }
+        }
+    }
+
+    protected function create_domain($domain)
+    {
+        // Check if domain is already bought by us on gandi or is available
+        $availability =  $this->check_domain_availability($domain);
+
+        // $availability = 1 means domain is not registered anywhere and is available
+        // $availability = 2 means domain is not available
+        // $availability = 0 means domain already purchased by us
+        if ($availability == 1) {
+            Log::channel('domain_process')->info('Regsitering domain ' . $domain . ' on gandi');
+            $domain_details = [
+                "fqdn" => $domain,
+                "duration" => 1,
+                "owner" => [
+                    "given" => "Gregory",
+                    "family" => "Cruz",
+                    "country" => "US",
+                    "city" => "Wilmington",
+                    "streetaddr" => "704 N. King Street",
+                    "type" => "individual",
+                    "phone" => "+1.3023064787",
+                    "zip" => "19801",
+                    "state" => "US-DE",
+                    "email" => "hello@cosark.com"
+                ],
+            ];
+            Log::channel('domain_process')->info(json_encode($domain_details));
+            $server =  Http::withHeaders([
+                'Authorization' => 'Apikey ' . env('GANDI_API_KEY'),
+                'content-type' => 'application/json'
+            ])->post(env('GANDI') . "/domain/domains", $domain_details);
+
+            Log::channel('domain_process')->info(json_encode($server->json()));
+        }
+
+        return $availability;
+    }
+
+    protected function create_server($domain)
+    {
+
+        $droplet = [
+            "name" => $domain,
+            "region" => "nyc1",
+            "size" => "s-1vcpu-512mb-10gb",
+            "image" => env('DO_SNAPSHOT'),
+            "ssh_keys" => [
+                env('DO_SSH')
+            ]
+        ];
+        $response =  Http::withHeaders([
+            'Authorization' => 'Bearer ' . env('DO_KEY'),
+            'content-type' => 'application/json'
+        ])->post(env('DO_DROPLET') . "/droplets", $droplet);
+
+        $droplet_data = $response->json();
+
+        Log::channel('doserver')->info(json_encode($droplet_data));
+
+        $data['droplet_id'] = $droplet_data['droplet']['id'];
+        $data['server_ip'] = '';
+
+        if (isset($droplet_data['droplet']['networks']['v4'][0]['ip_address']) && count($droplet_data['droplet']['networks']['v4'])) {
+            foreach ($droplet_data['droplet']['networks']['v4'] as $networks) {
+                if ($networks['type'] == 'public') {
+                    $data['server_ip'] = $networks['ip_address'];
+                }
+            }
+        }
+
+        return $data;
+    }
+
+    protected function check_server_ip($droplet_id)
+    {
+        $droplet_response =  Http::withHeaders([
+            'Authorization' => 'Bearer ' . env('DO_KEY'),
+            'content-type' => 'application/json'
+        ])->get(env('DO_DROPLET') . "/droplets/$droplet_id");
+        $server_ip = '';
+        $droplet_data = $droplet_response->json();
+        Log::channel('doserver')->info("Server details:-" . json_encode($droplet_data));
+        if (isset($droplet_data['droplet']['networks']['v4'][0]['ip_address']) && count($droplet_data['droplet']['networks']['v4'])) {
+            foreach ($droplet_data['droplet']['networks']['v4'] as $networks) {
+                if ($networks['type'] == 'public') {
+                    $server_ip = $networks['ip_address'];
+                }
+            }
+        }
+
+        // if (!$server_ip) {
+        //     $this->check_server_ip($droplet_id);
+        // }
+
+        return $server_ip;
+    }
+
+    protected function update_dns($domain, $server_ip)
+    {
+        $records = [
+            'rrset_values' => [
+                $server_ip
+            ]
+        ];
+
+        // $records = $this->domain_saved_dns($domain, $a_records);
+
+        // echo "<pre>";
+        // print_r($records); die;
+
+        $server =  Http::withHeaders([
+            'Authorization' => 'Apikey ' . env('GANDI_API_KEY'),
+            'content-type' => 'application/json'
+        ])->put(env('GANDI') . "/livedns/domains/$domain/records/@/A", $records);
+
+        Log::channel('domain_process')->info(json_encode($server->json()));
+
+        return true;
+    }
+
+    protected function install_ssl($domain, $server_ip)
+    {
+        $curl = curl_init();
+
+        curl_setopt_array($curl, array(
+            CURLOPT_URL => "https://temp.emailpanther.com/install_ssl",
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_ENCODING => '',
+            CURLOPT_MAXREDIRS => 10,
+            CURLOPT_TIMEOUT => 0,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_POSTFIELDS => array('hostname' => $domain, 'server_ip' => $server_ip, 'hash' => '33553496110b1ee83c97ae3c200d058fe711f6b1'),
+        ));
+        Log::channel('domain_process')->info('SSL:-' . "https://temp.emailpanther.com/install_ssl");
+        $response = curl_exec($curl);
+
+        Log::channel('domain_process')->info($response);
+
+        curl_close($curl);
+
+        // if ($response == 'done')
+        return true;
+        // else
+        //     return false;
+
+        // $output = shell_exec("cd /var/www/cert_install && python3 ssl.py $server_ip $domain");
+        // Log::channel('domain_process')->info('SSL:-' . $output);
+        // if ($output == 'cannot_connect') {
+        //     return false;
+        // } else {
+        //     return true;
+        // }
+    }
+
+    protected function domain_saved_dns($domain, $records)
+    {
+        $response =  Http::withHeaders([
+            'Authorization' => 'Apikey ' . env('GANDI_API_KEY'),
+            'content-type' => 'application/json'
+        ])->get(env('GANDI') . "/livedns/domains/$domain/records");
+
+        $domain_check = $response->json();
+
+        if (count($domain_check)) {
+            foreach ($domain_check as $domain_records) {
+                if ($domain_records['rrset_type'] != 'A') {
+                    $records['items'][] = $domain_records;
+                }
+            }
+        }
+
+        return $records;
+    }
+
+    protected function create_ee_proxy($domain, $data, $server_ip, $domain_email)
+    {
+        $server_ip = $server_ip;
+        $proxy_user = env("PROXY_USER");
+        $proxy_password = env("PROXY_PASSWORD");
+        $account = [
+            "account" => $domain . '_' . date('his'),
+            'email' => $domain_email,
+            "name" => $domain . '_' . date('his'),
+            'path' => "*",
+            'imap' => [
+                'auth' => [
+                    'user' => $data->imap_username,
+                    'pass' => $data->imap_password,
+                ],
+                "host" => $data->imap_host,
+                "port" => $data->imap_port,
+                "secure" => true,
+                "resyncDelay" => 900
+            ],
+            'smtp' => [
+                'auth' => [
+                    'user' => $data->smtp_username,
+                    'pass' => $data->smtp_password,
+                ],
+                "host" => $data->host,
+                "port" => $data->smtp_port,
+                // "secure" => true,
+            ],
+            'proxy' => "socks5://$proxy_user:$proxy_password@$server_ip:1080"
+        ];
+
+        if ($data->smtp_protocol) {
+            $account['smtp']['secure'] = true;
+        }
+
+        $response = Http::withHeaders([
+            'Authorization' => 'Bearer ' . env('EE_AUTH'),
+            'content-type' => 'application/json'
+        ])->post(env('EE_BASE') . "/account", $account);
+
+        Log::channel('domain_process')->info(json_encode($response->json()));
+        return  $account['account'];
+    }
+
+
+    // check domain availability
+    protected function check_domain_availability($domain)
+    {
+
+        // check if domain is registered in our account on gandi
+        $under_me =  $this->check_domain_under_me($domain);
+
+        if (!$under_me) {
+            // return $this->check_availability($domain);
+        }
+
+        return $under_me;
+    }
+
+
+    protected function check_domain_under_me($domain)
+    {
+        $response =  Http::withHeaders([
+            'Authorization' => 'Apikey ' . env('GANDI_API_KEY'),
+            'content-type' => 'application/json'
+        ])->get(env('GANDI') . "/domain/domains/$domain");
+        $domain_check = $response->json();
+
+        Log::channel('domain_process')->info($domain_check);
+        if (isset($domain_check['id']) && $domain_check['id']) {
+            $this->info('Domain already bought');
+            return 2;
+        }
+    }
+
+
+    protected function check_availability($domain)
+    {
+        $response =  Http::withHeaders([
+            'Authorization' => 'Apikey ' . env('GANDI_API_KEY'),
+            'content-type' => 'application/json'
+        ])->get(env('GANDI') . "/domain/check?name=$domain");
+        $domain_check = $response->json();
+
+        Log::channel('domain_process')->info('Domain check');
+        Log::channel('domain_process')->info($domain_check);
+
+        if (isset($domain_check['products'][0]['status']) && $domain_check['products'][0]['status'] == 'unavailable') {
+            $this->info('Domain unavailable');
+            return 0;
+        } elseif (isset($domain_check['products'][0]['status']) && $domain_check['products'][0]['status'] == 'available') {
+            $this->info('Domain available');
+            return 1;
+        }
+    }
+
+    protected function create_tracking_domains($domain, $customer_id)
+    {
+
+        $TrackingDomain = TrackingDomain::where([
+            'customer_id' => $customer_id,
+            'name' => $domain
+        ])
+            ->first();
+        if (!isset($TrackingDomain->id)) {
+            // automatically add tracking domain
+            $TrackingDomain = new TrackingDomain();
+            $TrackingDomain->scheme = 'https';
+            $TrackingDomain->name = $domain;
+            $TrackingDomain->customer_id =  $customer_id;
+            $TrackingDomain->status = 'unverified';
+            $TrackingDomain->verification_method = 'host';
+            $TrackingDomain->save();
+        }
+
+        $url = $domain;
+        $verifyUrl = "https://$url/?q=ok";
+        Log::channel('domain_process')->info($verifyUrl);
+        try {
+            $result = file_get_contents($verifyUrl);
+            $this->info('tracking:-' . $result);
+            Log::channel('doserver')->info("Tracking domain result:- " . $result);
+            if ($result == 'ok') {
+                Log::channel('doserver')->info("Tracking domains ok:- " . $TrackingDomain->name);
+                $TrackingDomain->setVerified();
+                $TrackingDomain->save();
+                return true;
+                // $user->domain_created_attached = 1;
+                // $user->save();
+            } else {
+                return false;
+            }
+        } catch (\Throwable $th) {
+            Log::channel('domain_process')->info('acj');
+            Log::channel('domain_process')->info($th->getMessage());
+            return false;
+        }
+    }
+
+    public function update_dns_namecheap($domain, $server_ip)
+    {
+        $domain = explode('.', $domain);
+        $server =  Http::get(env('NAMECHEAP_LIVE') . '&Command=namecheap.domains.dns.getHosts&ClientIp=65.108.3.53&SLD=' . $domain[0] . '&TLD=' . $domain[1]);
+        $xmlObject = simplexml_load_string($server->body());
+
+        $json = json_encode($xmlObject);
+        $hosts = json_decode($json, true);
+
+        $query = array();
+        $count = 1;
+        if (isset($hosts['CommandResponse']['DomainDNSGetHostsResult']['host']) && count($hosts['CommandResponse']['DomainDNSGetHostsResult']['host'])) {
+            foreach ($hosts['CommandResponse']['DomainDNSGetHostsResult']['host'] as $key => $data) {
+                if ($data['@attributes']['Type'] != 'A') {
+                    $query[$key]["HostName$count"] = $data['@attributes']['Name'];
+                    $query[$key]["RecordType$count"] = $data['@attributes']['Type'];
+                    $query[$key]["Address$count"] = $data['@attributes']['Address'];
+                    $query[$key]["MXPref$count"] = $data['@attributes']['MXPref'];
+                    $query[$key]["TTL$count"] = $data['@attributes']['TTL'];
+                    $count++;
+                }
+            }
+        }
+        if (!isset($key))
+            $key = 0;
+        else
+            ++$key;
+
+        $query[$key]["HostName$count"] = '@';
+        $query[$key]["RecordType$count"] = 'A';
+        $query[$key]["Address$count"] = $server_ip;
+        $query[$key]["MXPref$count"] = 10;
+
+        Log::channel('domain_process')->info(json_encode($query));
+
+        $string = '';
+        foreach ($query as $query_string) {
+            $string .= http_build_query($query_string) . '&';
+        }
+
+        $server =  Http::get(env('NAMECHEAP_LIVE') . '&Command=namecheap.domains.dns.setHosts&ClientIp=65.108.3.53&SLD=' . $domain[0] . '&TLD=' . $domain[1] . '&' . $string);
+
+        Log::channel('domain_process')->info($server->body());
+
+        return true;
+    }
+}
