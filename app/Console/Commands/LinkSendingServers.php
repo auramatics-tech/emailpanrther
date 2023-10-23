@@ -7,6 +7,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Acelle\Model\SendingServer;
 use Acelle\Model\TrackingDomain;
+use Acelle\Model\ConnectionLog;
 use Log;
 
 class LinkSendingServers extends Command
@@ -48,6 +49,7 @@ class LinkSendingServers extends Command
             $tracking_ready = [];
             if (count($sending_servers)) {
                 foreach ($sending_servers as $key => $servers) {
+                    $delete_error = ConnectionLog::where('host',$servers->host)->delete();
                     $sending_identities = json_decode($servers->options);
 
                     if (isset($sending_identities->identities)) {
@@ -56,7 +58,7 @@ class LinkSendingServers extends Command
                             $this->info($domain_email);
                             $domain = (substr(strrchr($domain, "@"), 1)) ? substr(strrchr($domain, "@"), 1) : $domain_email;
                             // 65.108.3.53
-                            $data->server_ip = '127.0.0.1';
+                            $data->server_ip = '65.108.3.53';//'127.0.0.1';
 
                             if (!isset($data->cloudfare_registered) || !$data->cloudfare_registered) {
                                 $cloudfare = $this->register_domain_cloudfare($domain, $servers);
@@ -89,7 +91,6 @@ class LinkSendingServers extends Command
 
                                 if ($servers->type == 'smtp') {
                                     if (!isset($data->proxy_created) || $data->proxy_created == 0) {
-
                                         if (isset($data->domain_created) && $data->domain_created == 1) {
                                             // Create EE Proxy
                                             $this->info('Creating EE Proxy');
@@ -160,6 +161,14 @@ class LinkSendingServers extends Command
         } catch (\Throwable $th) {
             $servers->logger()->info('ERROR');
             $servers->logger()->info($th->getMessage());
+            if(isset($servers->host)){
+                $error = new ConnectionLog();
+                $error->host = $servers->host;
+                $error->error = $th->getMessage();
+                $error->error_type = '3';
+                $error->sending_server = $servers->id;
+                $error->save();
+            }
         }
     }
 
@@ -301,6 +310,12 @@ class LinkSendingServers extends Command
             return true;
         } else {
             $server->logger()->info('Error updating Godaddy DNS' . json_encode($dns->json()));
+            $error = new ConnectionLog();
+            $error->host = $server->host;
+            $error->error = $dns->json();
+            $error->error_type = '3';
+            $error->sending_server = $server->id;
+            $error->save();
             return false;
         }
     }
@@ -308,7 +323,7 @@ class LinkSendingServers extends Command
     protected function create_ee_proxy($domain, $data, $server_ip, $domain_email, $server)
     {
 
-        $proxy = Proxies::where('status',1)->first();
+        $proxy = Proxies::where('status',1)->inRandomOrder()->first();
         $proxy_ip = $proxy->ip_address;
         $port = $proxy->port;
         
@@ -355,6 +370,7 @@ class LinkSendingServers extends Command
         if (isset($res['state']) && $res['state'] == 'new')
             return  $account['account'];
         else
+            // $this->create_ee_proxy($domain, $data, $server_ip, $domain_email, $server);
             return false;
     }
 
@@ -442,15 +458,24 @@ class LinkSendingServers extends Command
         $request =  Http::withHeaders([
             'Authorization' => " Bearer uDIyZAMuxaRZ_OfkudVwcfgZekvOOGMaUXl8T29r",
             'content-type' => 'application/json'
-        ])->put("https://api.cloudflare.com/client/v4/zones", $records);
+        ])->post("https://api.cloudflare.com/client/v4/zones", $records);
 
         $server->logger()->info('Cloudfare api status:- ' . json_encode($request->json()));
 
         if ($request->status() == 200) {
             $server->logger()->info('Cloudfare Website resgitered');
+            $result = $request->json();
+            $server->cloudfare_id = $result['result']['id'];
+            $server->save();
             return true;
         } else {
             $server->logger()->info('Error updating Cloudfare' . json_encode($request->json()));
+            $error = new ConnectionLog();
+            $error->host = $server->host;
+            $error->error = $request->json();
+            $error->error_type = '3';
+            $error->sending_server = $server->id;
+            $error->save();
             return false;
         }
     }

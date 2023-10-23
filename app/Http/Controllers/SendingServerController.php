@@ -50,9 +50,14 @@ class SendingServerController extends Controller
             ->where('multi_server_linked_with', 0)
             ->orderBy($request->sort_order, $request->sort_direction ? $request->sort_direction : 'asc')
             ->paginate($request->per_page);
+        $errorlogs = ConnectionLog::select('connection_logs.*')
+            ->where("connection_logs.error_type", "3")
+            // ->whereDate('connection_logs.created_at', date('Y-m-d'))
+            ->orderby('connection_logs.created_at', 'desc')->get();
 
         return view('sending_servers._list', [
             'items' => $items,
+            'errorlogs' => $errorlogs,
         ]);
     }
 
