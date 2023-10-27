@@ -49,7 +49,7 @@ class LinkSendingServers extends Command
             $tracking_ready = [];
             if (count($sending_servers)) {
                 foreach ($sending_servers as $key => $servers) {
-                    $delete_error = ConnectionLog::where('host',$servers->host)->delete();
+                    $delete_error = ConnectionLog::where('host', $servers->host)->delete();
                     $sending_identities = json_decode($servers->options);
 
                     if (isset($sending_identities->identities)) {
@@ -58,7 +58,7 @@ class LinkSendingServers extends Command
                             $this->info($domain_email);
                             $domain = (substr(strrchr($domain, "@"), 1)) ? substr(strrchr($domain, "@"), 1) : $domain_email;
                             // 65.108.3.53
-                            $data->server_ip = '65.108.3.53';//'127.0.0.1';
+                            $data->server_ip = '65.108.3.53'; //'127.0.0.1';
 
                             if (!isset($data->cloudfare_registered) || !$data->cloudfare_registered) {
                                 $cloudfare = $this->register_domain_cloudfare($domain, $servers);
@@ -132,7 +132,7 @@ class LinkSendingServers extends Command
                                 if (!isset($data->tracking_ready) || $data->tracking_ready == 0) {
                                     // Create Tracking Domain
                                     $this->info('Creating Tracking Domain');
-                                    if ($this->create_tracking_domains($domain, $servers->customer_id)) {
+                                    if ($this->create_tracking_domains($domain, $servers->customer_id, $servers->id, $servers->host)) {
                                         $servers->logger()->info('Server ready to be used.');
                                         $this->info('Tracking Domain Ready');
                                         $data->tracking_ready = 1;
@@ -161,7 +161,7 @@ class LinkSendingServers extends Command
         } catch (\Throwable $th) {
             $servers->logger()->info('ERROR');
             $servers->logger()->info($th->getMessage());
-            if(isset($servers->host)){
+            if (isset($servers->host)) {
                 $error = new ConnectionLog();
                 $error->host = $servers->host;
                 $error->error = $th->getMessage();
@@ -323,10 +323,12 @@ class LinkSendingServers extends Command
     protected function create_ee_proxy($domain, $data, $server_ip, $domain_email, $server)
     {
 
-        $proxy = Proxies::where('status',1)->inRandomOrder()->first();
+        $proxy = Proxies::where('status', 1)->inRandomOrder()->first(); //->where('use_count','<=',5)
+        $proxy->use_count = $proxy->use_count + 1;
+        $proxy->save();
         $proxy_ip = $proxy->ip_address;
         $port = $proxy->port;
-        
+
         $account = [
             "account" => $domain . '_' . date('his'),
             'email' => $domain_email,
@@ -375,7 +377,7 @@ class LinkSendingServers extends Command
     }
 
 
-    protected function create_tracking_domains($domain, $customer_id)
+    protected function create_tracking_domains($domain, $customer_id, $server_id, $server_host)
     {
 
         $TrackingDomain = TrackingDomain::where([
@@ -414,6 +416,12 @@ class LinkSendingServers extends Command
         } catch (\Throwable $th) {
             Log::channel('domain_process')->info('acj');
             Log::channel('domain_process')->info($th->getMessage());
+            $error = new ConnectionLog();
+            $error->host = $server_host;
+            $error->error = $th->getMessage();
+            $error->error_type = '3';
+            $error->sending_server = $server_id;
+            $error->save();
             return false;
         }
     }
@@ -456,7 +464,7 @@ class LinkSendingServers extends Command
         $records['type'] = 'full';
 
         $request =  Http::withHeaders([
-            'Authorization' => " Bearer uDIyZAMuxaRZ_OfkudVwcfgZekvOOGMaUXl8T29r",
+            'Authorization' => " Bearer hE1uRtUx1E3c0RaE7W_63Xlqq4v1_U3aXOcobTzQ", //uDIyZAMuxaRZ_OfkudVwcfgZekvOOGMaUXl8T29r",
             'content-type' => 'application/json'
         ])->post("https://api.cloudflare.com/client/v4/zones", $records);
 
@@ -472,7 +480,7 @@ class LinkSendingServers extends Command
             $server->logger()->info('Error updating Cloudfare' . json_encode($request->json()));
             $error = new ConnectionLog();
             $error->host = $server->host;
-            $error->error = $request->json();
+            $error->error = json_encode($request->json());
             $error->error_type = '3';
             $error->sending_server = $server->id;
             $error->save();
