@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Http;
 use Acelle\Model\SendingServer;
 use Acelle\Model\TrackingDomain;
 use Acelle\Model\ConnectionLog;
+use Acelle\Model\ServerLog;
 use Log;
 
 class LinkSendingServers extends Command
@@ -61,6 +62,7 @@ class LinkSendingServers extends Command
                             $data->server_ip = '65.108.3.53'; //'127.0.0.1';
 
                             if (!isset($data->cloudfare_registered) || !$data->cloudfare_registered) {
+                                
                                 $cloudfare = $this->register_domain_cloudfare($domain, $servers);
                                 if ($cloudfare) {
                                     $data->cloudfare_registered = 1;
@@ -179,7 +181,7 @@ class LinkSendingServers extends Command
                 $server_ip
             ]
         ];
-
+        $this->server_error_logs($server->id,'DNS update started');
         $dns =  Http::withHeaders([
             'Authorization' => 'Apikey ' . env('GANDI_API_KEY'),
             'content-type' => 'application/json'
@@ -203,11 +205,13 @@ class LinkSendingServers extends Command
 
         Log::channel('domain_process')->info(json_encode($dns->json()));
         $server->logger()->info('Updating DNS Gandi' . json_encode($dns->json()));
+        $this->server_error_logs($server->id,'DNS update done',json_encode($dns->json()));
         return true;
     }
     public function update_dns_namecheap($domain, $server_ip, $server_main)
     {
         $domain = explode('.', $domain);
+        $this->server_error_logs($server_main->id,'Namecheap DNS update started');
         $server =  Http::get(env('NAMECHEAP_LIVE') . '&Command=namecheap.domains.dns.getHosts&ClientIp=65.108.3.53&SLD=' . $domain[0] . '&TLD=' . $domain[1]);
         $xmlObject = simplexml_load_string($server->body());
 
@@ -260,7 +264,7 @@ class LinkSendingServers extends Command
         $namecheap =  Http::get(env('NAMECHEAP_LIVE') . '&Command=namecheap.domains.dns.setHosts&ClientIp=65.108.3.53&SLD=' . $domain[0] . '&TLD=' . $domain[1] . '&' . $string);
 
         Log::channel('domain_process')->info($namecheap->body());
-
+        $this->server_error_logs($server_main->id,'DNS update done',json_encode($namecheap->body()));
         $server_main->logger()->info('Updating DNS Namecheap' . json_encode($namecheap->json()));
         return true;
     }
@@ -277,7 +281,7 @@ class LinkSendingServers extends Command
             ]
         ];
 
-
+        $this->server_error_logs($server->id,'Godaddy DNS update started');
         $dns =  Http::withHeaders([
             'Authorization' => " sso-key " . env('GODADDY_KEY') . ":" . env('GODADDY_SECRET'),
             'content-type' => 'application/json'
@@ -307,6 +311,7 @@ class LinkSendingServers extends Command
         $server->logger()->info('Godaddy DNS' . json_encode($dns->json()));
         if ($dns->status() == 200) {
             $server->logger()->info('Godaddy DNS Updated');
+            $this->server_error_logs($server->id,'Godaddy DNS update done',json_encode($dns->json()));
             return true;
         } else {
             $server->logger()->info('Error updating Godaddy DNS' . json_encode($dns->json()));
@@ -316,6 +321,7 @@ class LinkSendingServers extends Command
             $error->error_type = '3';
             $error->sending_server = $server->id;
             $error->save();
+            $this->server_error_logs($server->id,'Godaddy DNS update error',json_encode($dns->json()));
             return false;
         }
     }
@@ -359,14 +365,14 @@ class LinkSendingServers extends Command
         if ($data->smtp_protocol) {
             $account['smtp']['secure'] = true;
         }
-
+        $this->server_error_logs($server->id,'Creating Eproxy');
         $response = Http::withHeaders([
             'Authorization' => 'Bearer ' . env('EE_AUTH'),
             'content-type' => 'application/json'
         ])->post(env('EE_BASE') . "/account", $account);
 
         $server->logger()->info('Creating EE Proxy' . json_encode($response->json()));
-
+        $this->server_error_logs($server->id,'Creating Eproxy done',json_encode($response->json()));
         Log::channel('domain_process')->info(json_encode($response->json()));
         $res = $response->json();
         if (isset($res['state']) && $res['state'] == 'new')
@@ -385,6 +391,7 @@ class LinkSendingServers extends Command
             'name' => $domain
         ])
             ->first();
+        $this->server_error_logs($server_id,'Creating Tracking Domain');
         if (!isset($TrackingDomain->id)) {
             // automatically add tracking domain
             $TrackingDomain = new TrackingDomain();
@@ -407,6 +414,7 @@ class LinkSendingServers extends Command
                 Log::channel('doserver')->info("Tracking domains ok:- " . $TrackingDomain->name);
                 $TrackingDomain->setVerified();
                 $TrackingDomain->save();
+                $this->server_error_logs($server_id,'Creating Tracking Domain done',$TrackingDomain->name);
                 return true;
                 // $user->domain_created_attached = 1;
                 // $user->save();
@@ -422,6 +430,7 @@ class LinkSendingServers extends Command
             $error->error_type = '3';
             $error->sending_server = $server_id;
             $error->save();
+            $this->server_error_logs($server_id,'Creating Tracking Domain error',$th->getMessage());
             return false;
         }
     }
@@ -443,6 +452,7 @@ class LinkSendingServers extends Command
             // Expected name has format "/CN=*.yourdomain.com"
             $namepart = explode('=', $cert['name']);
             $servers->logger()->info('SSL Check namepart ' . json_encode($namepart));
+            $this->server_error_logs($servers->id,'SSL Check namepart',json_encode($namepart));
             // We want to correctly confirm the certificate even 
             // for subdomains like "www.yourdomain.com"
             if (count($namepart) == 2) {
@@ -450,6 +460,7 @@ class LinkSendingServers extends Command
                 $check_domain = substr($domain, -strlen($cert_domain));
                 $servers->logger()->info('SSL Check cert_domain ' . json_encode($cert_domain));
                 $servers->logger()->info('SSL Check check_domain ' . json_encode($check_domain));
+                $this->server_error_logs($servers->id,'SSL Check check_domain',json_encode($check_domain));
                 $res = ($cert_domain == $check_domain);
             }
         }
@@ -462,7 +473,7 @@ class LinkSendingServers extends Command
     {
         $records['name'] = $domain;
         $records['type'] = 'full';
-
+        $this->server_error_logs($server->id,'CloudFare Registration started');
         $request =  Http::withHeaders([
             'Authorization' => " Bearer hE1uRtUx1E3c0RaE7W_63Xlqq4v1_U3aXOcobTzQ", //uDIyZAMuxaRZ_OfkudVwcfgZekvOOGMaUXl8T29r",
             'content-type' => 'application/json'
@@ -475,6 +486,7 @@ class LinkSendingServers extends Command
             $result = $request->json();
             $server->cloudfare_id = $result['result']['id'];
             $server->save();
+            $this->server_error_logs($server->id,'CloudFare resgitered',json_encode($request->json()));
             return true;
         } else {
             $server->logger()->info('Error updating Cloudfare' . json_encode($request->json()));
@@ -484,7 +496,15 @@ class LinkSendingServers extends Command
             $error->error_type = '3';
             $error->sending_server = $server->id;
             $error->save();
+            $this->server_error_logs($server->id,'Error In CloudFare registration',json_encode($request->json()));
             return false;
         }
+    }
+    protected function server_error_logs($id,$title,$response=''){
+        $log = new ServerLog();
+        $log->sending_server_id = $id;
+        $log->title = $title;
+        $log->response = isset($response) ? $response : NULL;
+        $log->save();
     }
 }

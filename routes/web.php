@@ -590,7 +590,13 @@ Route::group(['middleware' => ['not_installed', 'auth', 'frontend', 'subscriptio
     Route::post('sending_servers/create-server/{type}', 'SendingServerController@storenew');
     Route::match(['get', 'post'], 'sending_servers/smtp-imap/{uid}', 'SendingServerController@new_multi_server');
     Route::get('sending_servers/{id}/edit/{type}', 'SendingServerController@edit');
-    Route::patch('sending_servers/{id}/update/{type}', 'SendingServerController@update');;
+    Route::patch('sending_servers/{id}/update/{type}', 'SendingServerController@update');
+    //server Log
+    Route::get('server-logs', 'ServerLogsController@index');
+    Route::get('server-logs/edit/{id}', 'ServerLogsController@edit');
+    Route::get('server-logs/delete/{id}', 'ServerLogsController@delete');
+    Route::get('server-logs/listing/{page?}', 'ServerLogsController@listing');
+    Route::post('server-logs/store', 'ServerLogsController@store');
 
     // Sending domain
     Route::post('sending_domains/{id}/updateDkimSelector', 'SendingDomainController@updateDkimSelector');
