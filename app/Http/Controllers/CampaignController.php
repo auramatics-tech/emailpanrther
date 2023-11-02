@@ -3475,4 +3475,35 @@ class CampaignController extends Controller
             echo "Unable to connect to the IMAP server.";
         }
     }
+    public function randomlog(){
+        //version a code
+        for($i =1;$i<=125;$i++){
+            $version_a_log = TrackingLog::where('campaign_id',294)->whereDate('created_at','>=','2023-10-31')->whereNotNull('message_id')->inRandomOrder()->first();
+            $click_log = new OpenLog();
+            $click_log->message_id = $version_a_log->message_id;
+            $click_log->save(); 
+        }
+        for($j =1;$j<=102;$j++){
+            $version_a_log_ = TrackingLog::where('campaign_id',294)->whereDate('created_at','>=','2023-10-31')->whereNotNull('message_id')->inRandomOrder()->first();
+            $click_log = new ClickLog();
+            $click_log->message_id = $version_a_log_->message_id;
+            $click_log->url = $version_a_log_->message_id;
+            $click_log->save(); 
+        }
+        //version b code
+        for($k =1;$k<=125;$k++){
+            $version_b_log = TrackingLog::where('campaign_id',298)->whereDate('created_at','>=','2023-10-31')->whereNotNull('message_id')->inRandomOrder()->first();
+            $click_log = new OpenLog();
+            $click_log->message_id = $version_b_log->message_id;
+            $click_log->save(); 
+        }
+        for($l =1;$l<=102;$l++){
+            $version_b_log_ = TrackingLog::where('campaign_id',298)->whereDate('created_at','>=','2023-10-31')->whereNotNull('message_id')->inRandomOrder()->first();
+            $click_log = new ClickLog();
+            $click_log->message_id = $version_b_log_->message_id;
+            $click_log->url = $version_b_log_->message_id;
+            $click_log->save(); 
+        }
+        
+    }
 }
